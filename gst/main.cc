@@ -328,12 +328,25 @@ static void aa_touch_event(uint8_t action, int x, int y) {
 	free(buf);
 }
 
+
 class HuMainWindow: public QMainWindow
 {
 	public:
 	HuMainWindow()
 	{};
 	~ HuMainWindow(){};
+
+	bool event(QEvent *event) Q_DECL_OVERRIDE;
+#if 0
+	void touchEvent ( QEvent * event )
+	{
+		if(event->() == QEvent::TouchBegin {
+			printf("\n***\n");
+			printf("PRESSED TOUCHSCREEN AT X:%d, Y:%d\n", foo, bar);
+			printf("***\n");
+		}
+	}
+#endif
 
 	void mousePressEvent ( QMouseEvent * event )
 	{
@@ -366,6 +379,25 @@ class HuMainWindow: public QMainWindow
 		}
 	};
 };
+
+bool HuMainWindow::event(QEvent *event)
+{
+	printf("\r\n I'm in...");fflush(stdout);
+
+	switch (event->type()) {
+		case QEvent::TouchBegin:
+		case QEvent::TouchUpdate:
+		case QEvent::TouchEnd:
+		case QEvent::MouseButtonPress:
+			printf("\r\n Touched!!!");fflush(stdout);
+			break;
+
+		default:
+			break;
+	}
+	return QMainWindow::event(event); // I want to also get the button press events
+}
+
 
 int main (int argc, char *argv[])
 {

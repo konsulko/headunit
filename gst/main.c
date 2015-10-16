@@ -3,14 +3,13 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/video/videooverlay.h>
-#include <QApplication>
-#include <QMainWindow>
-#include <QMouseEvent>
+#include <SDL/SDL.h>
 
 #include "hu_uti.h"
 #include "hu_aap.h"
 
 typedef struct {
+	GMainLoop *loop;
 	GstPipeline *pipeline;
 	GstAppSrc *src;
 	GstElement *sink;
@@ -39,8 +38,6 @@ static gboolean read_data(gst_app_t *app)
 	/* Is there a video buffer queued? */
 	vbuf = read_head_buffer_get (&res_len);
 	if (vbuf != NULL) {
-		printf("vbuf: %p  res_len: %d\n", vbuf, res_len);
-
 		ptr = (guint8 *)g_malloc(res_len);
 		g_assert(ptr);
 		memcpy(ptr, vbuf, res_len);
@@ -119,7 +116,7 @@ static gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer *ptr)
 					       g_print("Error %s\n", err->message);
 					       g_error_free(err);
 					       g_free(debug);
-//					       g_main_loop_quit(app->loop);
+					       g_main_loop_quit(app->loop);
 				       }
 				       break;
 
@@ -141,14 +138,14 @@ static gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer *ptr)
 
 		case GST_MESSAGE_EOS:
 					 g_print("End of stream\n");
-//					 g_main_loop_quit(app->loop);
+					 g_main_loop_quit(app->loop);
 					 break;
 
 		case GST_MESSAGE_STATE_CHANGED:
 					 break;
 
 		default:
-					 g_print("got message %s\n", \
+//					 g_print("got message %s\n", \
 							 gst_message_type_get_name (GST_MESSAGE_TYPE (message)));
 					 break;
 	}
@@ -170,8 +167,8 @@ static int gst_pipeline_init(gst_app_t *app)
 
 	app->src = (GstAppSrc*)gst_element_factory_make("appsrc", "mysrc");
 	app->decoder = gst_element_factory_make("decodebin", "mydecoder");
-	app->convert = gst_element_factory_make("videoconvert", "myconvert");
-	app->sink = gst_element_factory_make("xvimagesink", "myvsink");
+	app->convert = gst_element_factory_make("imxipuvideotransform", "myconvert");
+	app->sink = gst_element_factory_make("imxipuvideosink", "myvsink");
 
 	g_assert(app->src);
 	g_assert(app->decoder);
@@ -199,24 +196,6 @@ static int gst_pipeline_init(gst_app_t *app)
 	return 0;
 }
 
-static int gst_loop(gst_app_t *app, QApplication *qapp)
-{
-	int ret;
-	GstStateChangeReturn state_ret;
-
-	state_ret = gst_element_set_state((GstElement*)app->pipeline, GST_STATE_PLAYING);
-	g_warning("set state returned %d\n", state_ret);
-
-	ret = qapp->exec();
-
-	state_ret = gst_element_set_state((GstElement*)app->pipeline, GST_STATE_NULL);
-	g_warning("set state null returned %d\n", state_ret);
-
-	gst_object_unref(app->pipeline);
-
-	return ret;
-}
-
 static int aa_cmd_send(int cmd_len, unsigned char *cmd_buf, int res_max, unsigned char *res_buf)
 {
 	int chan = cmd_buf[0];
@@ -230,7 +209,7 @@ static int aa_cmd_send(int cmd_len, unsigned char *cmd_buf, int res_max, unsigne
 		return -1;
 	}
 
-	printf("chan: %d cmd_len: %d\n", chan, cmd_len);
+//	printf("chan: %d cmd_len: %d\n", chan, cmd_len);
 	ret = hu_aap_enc_send (chan, cmd_buf+4, cmd_len - 4);
 	if (ret < 0) {
 		printf("aa_cmd_send(): hu_aap_enc_send() failed with (%d)\n", ret);
@@ -328,44 +307,146 @@ static void aa_touch_event(uint8_t action, int x, int y) {
 	free(buf);
 }
 
-class HuMainWindow: public QMainWindow
+gboolean sdl_poll_event(gpointer data)
 {
-	public:
-	HuMainWindow()
-	{};
-	~ HuMainWindow(){};
+	SDL_Event event;
+	SDL_MouseButtonEvent *mbevent;
+	gst_app_t *app = (gst_app_t *)data;
 
-	void mousePressEvent ( QMouseEvent * event )
-	{
-		if(event->button() == Qt::LeftButton) {
-			printf("\n***\n");
-			printf("PRESSED MOUSE BUTTON AT X:%d, Y:%d\n", event->x(), event->y());
-			printf("***\n");
-			aa_touch_event(ACTION_DOWN, event->x(), event->y());
+	if (SDL_PollEvent(&event) >= 0) {
+		switch (event.type) {
+		case SDL_MOUSEBUTTONDOWN:
+			mbevent = &event.button;
+			if (mbevent->button == SDL_BUTTON_LEFT) {
+//				printf("Left button down at x: %d y: %d\n", (int)((float)mbevent->x / 1024 * 800), (int)((float)mbevent->y / 600 * 480));
+				aa_touch_event(ACTION_DOWN, (int)((float)mbevent->x / 1024 * 800), (int)((float)mbevent->y / 600 * 480));
+			}
+			break;
+		case SDL_MOUSEBUTTONUP:
+			mbevent = &event.button;
+			if (mbevent->button == SDL_BUTTON_LEFT) {
+//				printf("Left button up at x: %d y: %d\n", (int)((float)mbevent->x / 1024 * 800), (int)((float)mbevent->y / 600 * 480));
+				aa_touch_event(ACTION_UP, (int)((float)mbevent->x / 1024 * 800), (int)((float)mbevent->y / 600 * 480));
+			} else if (mbevent->button == SDL_BUTTON_RIGHT) {
+				printf("Quitting...\n");
+				SDL_Quit();
+				g_main_loop_quit(app->loop);
+				return FALSE;
+			}
+			break;
+		case SDL_QUIT:
+			printf("Quitting...\n");
+			SDL_Quit();
+			g_main_loop_quit(app->loop);
+			return FALSE;
+			break;
 		}
-	};
+	}
 
-	void mouseReleaseEvent ( QMouseEvent * event )
-	{
-		if(event->button() == Qt::LeftButton) {
-			printf("\n***\n");
-			printf("RELEASED MOUSE BUTTON AT X:%d, Y:%d\n", event->x(), event->y());
-			printf("***\n");
-			aa_touch_event(ACTION_UP, event->x(), event->y());
-		}
-	};
+	return TRUE;
+}
 
-	void mouseMoveEvent ( QMouseEvent * event )
-	{
-		/* Was left button held down when the move event occurred? */
-		if(event->buttons() == Qt::LeftButton) {
-			printf("\n***\n");
-			printf("MOVED MOUSE TO X:%d, Y:%d\n", event->x(), event->y());
-			printf("***\n");
-			aa_touch_event(ACTION_MOVE, event->x(), event->y());
-		}
-	};
+static int gst_loop(gst_app_t *app)
+{
+	int ret;
+	GstStateChangeReturn state_ret;
+
+	state_ret = gst_element_set_state((GstElement*)app->pipeline, GST_STATE_PLAYING);
+//	g_warning("set state returned %d\n", state_ret);
+
+	app->loop = g_main_loop_new (NULL, FALSE);
+	g_timeout_add_full(G_PRIORITY_HIGH, 100, sdl_poll_event, (gpointer)app, NULL);
+	printf("Starting Android Auto...\n");
+  	g_main_loop_run (app->loop);
+
+	/* Should not reach this? */
+	SDL_Quit();
+
+	state_ret = gst_element_set_state((GstElement*)app->pipeline, GST_STATE_NULL);
+//	g_warning("set state null returned %d\n", state_ret);
+
+	gst_object_unref(app->pipeline);
+
+	return ret;
+}
+
+/* XPM */
+static const char *arrow[] = {
+	/* width height num_colors chars_per_pixel */
+	"    32    32        3            1",
+	/* colors */
+	"X c #000000",
+	". c #ffffff",
+	"  c None",
+	/* pixels */
+	"X                               ",
+	"XX                              ",
+	"X.X                             ",
+	"X..X                            ",
+	"X...X                           ",
+	"X....X                          ",
+	"X.....X                         ",
+	"X......X                        ",
+	"X.......X                       ",
+	"X........X                      ",
+	"X.....XXXXX                     ",
+	"X..X..X                         ",
+	"X.X X..X                        ",
+	"XX  X..X                        ",
+	"X    X..X                       ",
+	"     X..X                       ",
+	"      X..X                      ",
+	"      X..X                      ",
+	"       XX                       ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"                                ",
+	"0,0"
 };
+
+static SDL_Cursor *init_system_cursor(const char *image[])
+{
+	int i, row, col;
+	Uint8 data[4*32];
+	Uint8 mask[4*32];
+	int hot_x, hot_y;
+
+	i = -1;
+	for ( row=0; row<32; ++row ) {
+		for ( col=0; col<32; ++col ) {
+			if ( col % 8 ) {
+				data[i] <<= 1;
+				mask[i] <<= 1;
+			} else {
+				++i;
+				data[i] = mask[i] = 0;
+			}
+			switch (image[4+row][col]) {
+				case 'X':
+					data[i] |= 0x01;
+					mask[i] |= 0x01;
+					break;
+				case '.':
+					mask[i] |= 0x01;
+					break;
+				case ' ':
+					break;
+			}
+		}
+	}
+	sscanf(image[4+row], "%d,%d", &hot_x, &hot_y);
+	return SDL_CreateCursor(data, mask, 32, 32, hot_x, hot_y);
+}
 
 int main (int argc, char *argv[])
 {
@@ -374,14 +455,7 @@ int main (int argc, char *argv[])
 	errno = 0;
 	byte ep_in_addr  = -1;
 	byte ep_out_addr = -1;
-
-	/* Init Qt window */
-	QApplication qapp(argc, argv);
-	qapp.connect(&qapp, SIGNAL(lastWindowClosed()), &qapp, SLOT(quit ()));
-
-	HuMainWindow *window = new HuMainWindow();
-	window->resize(800, 480);
-	window->show();
+	SDL_Cursor *cursor;
 
 	/* Init gstreamer pipelien */
 	ret = gst_pipeline_init(app);
@@ -390,26 +464,38 @@ int main (int argc, char *argv[])
 		return (ret);
 	}
 
+#if 0
 	/* Overlay gst sink on the Qt window */
 	WId xwinid = window->winId();
 	gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(app->sink), xwinid);
+#endif
 
 	/* Start AA processing */
 	ret = hu_aap_start (ep_in_addr, ep_out_addr);
 	if (ret < 0) {
-		printf("hu_app_start() ret: %d\n", ret);
+		if (ret == -2)
+			printf("Phone is not connected. Connect a supported phone and restart.\n");
+		else if (ret == -1)
+			printf("Phone switched to accessory mode. Restart to enter AA mode.\n");
+		else
+			printf("hu_app_start() ret: %d\n", ret);
 		return (ret);
 	}
+
+	SDL_Init(SDL_INIT_EVERYTHING);
+	SDL_WM_SetCaption("Android Auto", NULL);
+	SDL_SetVideoMode(1024, 600, 16, SDL_HWSURFACE);
+	cursor = init_system_cursor(arrow);
+	SDL_SetCursor(cursor);
+	SDL_ShowCursor(SDL_ENABLE);
 
 	/* Start gstreamer pipeline and main loop */
-	ret = gst_loop(app, &qapp);
+	ret = gst_loop(app);
 	if (ret < 0) {
 		printf("gst_loop() ret: %d\n", ret);
-		return (ret);
 	}
 
-	/* Shut down window */
-	window->hide();
+	SDL_Quit();
 
 	/* Stop AA processing */
 	ret = hu_aap_stop ();
